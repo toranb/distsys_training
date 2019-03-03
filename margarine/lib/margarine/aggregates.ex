@@ -4,8 +4,12 @@ defmodule Margarine.Aggregates do
   require Logger
 
   def for(hash) do
-    # TODO: Do lookup from ets in the client process
-    {:error, :not_found}
+    case :ets.lookup(:the_table, hash) do
+      [{_, counter}] ->
+        {:ok, counter}
+      [] ->
+        {:error, :not_found}
+    end
   end
 
   def increment(hash) do
@@ -17,43 +21,50 @@ defmodule Margarine.Aggregates do
   end
 
   def init(_args \\ []) do
-    # TODO: Join pg2 group
-    __MODULE__ = :ets.new(__MODULE__, [:named_table, :set, :protected])
+    :pg2.join(:margarine, self())
+
+    :ets.new(:the_table, [:public, :named_table])
     :net_kernel.monitor_nodes(true)
 
-    {:ok, %{table: __MODULE__}}
+    {:ok, %{}}
   end
 
   def handle_cast({:increment, hash}, state) do
-    counter = get_counter(state.table, hash)
+    counter = get_counter(hash)
+    current_node = Node.self()
 
-    # TODO: Increment counter here using our `Node.self()` id as the key
+    new_counter = Drax.GCounter.increment(counter, current_node)
+    :ets.insert(:the_table, {hash, new_counter})
 
-    :ets.insert(state.table, {hash, counter})
-    # Broadcast messages to other nodes
-
-    {:noreply, state}
-  end
-
-  def handle_cast({:merge, counter}, state) do
-    # TODO: Pull counter from our ets table and merge it with the given counter
-    # then store it back in ets
+    members = :pg2.get_members(:margarine)
+    Enum.map(members, fn (pid) ->
+      GenServer.cast(pid, {:merge, hash, new_counter})
+    end)
 
     {:noreply, state}
   end
 
-  def handle_info(msg, state) do
-    Logger.info("Unhandled message: #{inspect msg}")
+  # :nodeup, node}, state
+  #  Node.spawn(node, fn)
+  #  :ets.tab2list(__MODULE__)
+  #  Enum.each
+  def handle_cast({:merge, hash, counter}, state) do
+    local_counter = get_counter(hash)
+    merged_counter = Drax.GCounter.merge(counter, local_counter)
+
+    :ets.insert(:the_table, {hash, merged_counter})
+
     {:noreply, state}
   end
 
-  defp get_counter(table, hash) do
-    case :ets.lookup(table, hash) do
+  defp get_counter(hash) do
+    case :ets.lookup(:the_table, hash) do
       [{^hash, aggregates}] ->
         aggregates
-
       _ ->
-        # TODO: Create a new counter
+        counter = Drax.GCounter.new()
+        :ets.insert(:the_table, {hash, counter})
+        counter
     end
   end
 end

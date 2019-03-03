@@ -4,7 +4,7 @@ defmodule Margarine.Application do
   use Application
 
   def start(_type, _args) do
-    :pg2.create(:aggregates)
+    :pg2.create(:margarine)
 
     children = [
       Margarine.Storage,
